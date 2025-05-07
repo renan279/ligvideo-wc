@@ -1,6 +1,6 @@
 <?php
 /**
- * Plugin Name: LigVideo WooCommerce Integration
+ * Plugin Name: LigVideo para woocommerce
  * Description: Integra LigVideo (AlouShop) ao WooCommerce para adicionar produtos ao carrinho via videochamada, suportando simples e variações por ID, e botão flutuante opcional.
  * Version:     1.4.8
  * Author:      Renan Macarroni
