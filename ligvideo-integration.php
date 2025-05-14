@@ -2,7 +2,7 @@
 /**
  * Plugin Name: LigVideo Integration
  * Description: Integra LigVideo (AlouShop) ao WooCommerce para adicionar produtos ao carrinho via videochamada, suportando simples e variações por ID, e botão flutuante opcional.
- * Version:     1.4.8
+ * Version:     1.5.0
  * Author:      Renan Macarroni
  * License:     GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -266,56 +266,133 @@ class LigVideo_Integration
         // Prioriza busca por código de barras (SKU)
         if ($sku = $request->get_param("codigo_barras")) {
             $logger->debug("Busca por SKU detectada: " . $sku, $context);
+
+            // Busca produtos simples
             $args["sku"] = $sku;
+            $produtos = wc_get_products($args);
+
+            // Busca variações
+            $variation_args = array(
+                'post_type' => 'product_variation',
+                'post_status' => 'publish',
+                'posts_per_page' => $args["limit"],
+                'paged' => isset($args["page"]) ? $args["page"] : 1,
+                'meta_query' => array(
+                    array(
+                        'key' => '_sku',
+                        'value' => $sku,
+                        'compare' => '='
+                    )
+                )
+            );
+
+            $variations = get_posts($variation_args);
+
+            // Adiciona produtos simples
+            foreach ($produtos as $p) {
+                $produto_fotos = [wp_get_attachment_url($p->get_image_id())];
+                $dados[] = [
+                    "produto_id" => $p->get_id(),
+                    "produto_nome" => $p->get_name(),
+                    "produto_preco" => (float) $p->get_price(),
+                    "produto_total" => (int) $p->get_stock_quantity(),
+                    "produto_fotos" => $produto_fotos,
+                    "produto_sku" => $p->get_sku(),
+                ];
+                $logger->debug("Produto simples adicionado: ID=" . $p->get_id() . ", Nome=" . $p->get_name() . ", SKU=" . $p->get_sku(), $context);
+            }
+
+            // Adiciona variações
+            foreach ($variations as $variation) {
+                $product = wc_get_product($variation->ID);
+                if ($product) {
+                    $produto_fotos = [wp_get_attachment_url($product->get_image_id())];
+                    $dados[] = [
+                        "produto_id" => $product->get_id(),
+                        "produto_nome" => $product->get_name(),
+                        "produto_preco" => (float) $product->get_price(),
+                        "produto_total" => (int) $product->get_stock_quantity(),
+                        "produto_fotos" => $produto_fotos,
+                        "produto_sku" => $product->get_sku(),
+                    ];
+                    $logger->debug("Variação adicionada: ID=" . $product->get_id() . ", Nome=" . $product->get_name() . ", SKU=" . $product->get_sku(), $context);
+                }
+            }
         } elseif ($id = $request->get_param("id")) {
             $logger->debug("Busca por ID detectada: " . $id, $context);
             $args["include"] = array_map("intval", explode(",", $id));
+            $produtos = wc_get_products($args);
+
+            foreach ($produtos as $p) {
+                $produto_fotos = [wp_get_attachment_url($p->get_image_id())];
+                $dados[] = [
+                    "produto_id" => $p->get_id(),
+                    "produto_nome" => $p->get_name(),
+                    "produto_preco" => (float) $p->get_price(),
+                    "produto_total" => (int) $p->get_stock_quantity(),
+                    "produto_fotos" => $produto_fotos,
+                    "produto_sku" => $p->get_sku(),
+                ];
+                $logger->debug("Produto adicionado: ID=" . $p->get_id() . ", Nome=" . $p->get_name() . ", SKU=" . $p->get_sku(), $context);
+            }
         } elseif ($nome = $request->get_param("nome")) {
             $logger->debug("Busca por nome detectada: " . $nome, $context);
             // Se for números ou números com hífen, busca por SKU
             if (preg_match('/^[0-9]+(-[0-9]+)?$/', $nome)) {
                 $logger->debug("Nome é numérico, tratando como SKU", $context);
                 $args["sku"] = $nome;
+                $produtos = wc_get_products($args);
+
+                foreach ($produtos as $p) {
+                    $produto_fotos = [wp_get_attachment_url($p->get_image_id())];
+                    $dados[] = [
+                        "produto_id" => $p->get_id(),
+                        "produto_nome" => $p->get_name(),
+                        "produto_preco" => (float) $p->get_price(),
+                        "produto_total" => (int) $p->get_stock_quantity(),
+                        "produto_fotos" => $produto_fotos,
+                        "produto_sku" => $p->get_sku(),
+                    ];
+                    $logger->debug("Produto adicionado: ID=" . $p->get_id() . ", Nome=" . $p->get_name() . ", SKU=" . $p->get_sku(), $context);
+                }
             } else {
                 $logger->debug("Nome é texto, configurando busca por título", $context);
+
+                // Busca produtos simples
                 $args["name"] = $nome;
-            }
-        }
+                $produtos = wc_get_products($args);
 
-        $logger->debug("Argumentos de busca configurados: " . json_encode($args), $context);
-
-        // Busca produtos
-        $produtos = wc_get_products($args);
-        $logger->debug("Produtos encontrados: " . count($produtos), $context);
-
-        foreach ($produtos as $p) {
-            $produto_fotos = [wp_get_attachment_url($p->get_image_id())];
-            $dados[] = [
-                "produto_id" => $p->get_id(),
-                "produto_nome" => $p->get_name(),
-                "produto_preco" => (float) $p->get_price(),
-                "produto_total" => (int) $p->get_stock_quantity(),
-                "produto_fotos" => $produto_fotos,
-                "produto_sku" => $p->get_sku(),
-            ];
-            $logger->debug("Produto adicionado: ID=" . $p->get_id() . ", Nome=" . $p->get_name() . ", SKU=" . $p->get_sku(), $context);
-
-            // Se for produto variável, adiciona as variações
-            if ($p->is_type('variable')) {
-                $variations = $p->get_available_variations();
-                foreach ($variations as $variation) {
-                    $variation_obj = wc_get_product($variation['variation_id']);
-                    if ($variation_obj) {
-                        $variation_fotos = [wp_get_attachment_url($variation_obj->get_image_id())];
+                foreach ($produtos as $p) {
+                    // Se for produto variável, pega apenas as variações
+                    if ($p->is_type('variable')) {
+                        $variations = $p->get_available_variations();
+                        foreach ($variations as $variation) {
+                            $variation_obj = wc_get_product($variation['variation_id']);
+                            if ($variation_obj) {
+                                $variation_fotos = [wp_get_attachment_url($variation_obj->get_image_id())];
+                                $dados[] = [
+                                    "produto_id" => $variation_obj->get_id(),
+                                    "produto_nome" => $variation_obj->get_name(),
+                                    "produto_preco" => (float) $variation_obj->get_price(),
+                                    "produto_total" => (int) $variation_obj->get_stock_quantity(),
+                                    "produto_fotos" => $variation_fotos,
+                                    "produto_sku" => $variation_obj->get_sku(),
+                                ];
+                                $logger->debug("Variação adicionada: ID=" . $variation_obj->get_id() . ", Nome=" . $variation_obj->get_name() . ", SKU=" . $variation_obj->get_sku(), $context);
+                            }
+                        }
+                    } else {
+                        // Se for produto simples, adiciona normalmente
+                        $produto_fotos = [wp_get_attachment_url($p->get_image_id())];
                         $dados[] = [
-                            "produto_id" => $variation_obj->get_id(),
-                            "produto_nome" => $variation_obj->get_name(),
-                            "produto_preco" => (float) $variation_obj->get_price(),
-                            "produto_total" => (int) $variation_obj->get_stock_quantity(),
-                            "produto_fotos" => $variation_fotos,
-                            "produto_sku" => $variation_obj->get_sku(),
+                            "produto_id" => $p->get_id(),
+                            "produto_nome" => $p->get_name(),
+                            "produto_preco" => (float) $p->get_price(),
+                            "produto_total" => (int) $p->get_stock_quantity(),
+                            "produto_fotos" => $produto_fotos,
+                            "produto_sku" => $p->get_sku(),
                         ];
-                        $logger->debug("Variação adicionada: ID=" . $variation_obj->get_id() . ", Nome=" . $variation_obj->get_name() . ", SKU=" . $variation_obj->get_sku(), $context);
+                        $logger->debug("Produto simples adicionado: ID=" . $p->get_id() . ", Nome=" . $p->get_name() . ", SKU=" . $p->get_sku(), $context);
                     }
                 }
             }
@@ -610,7 +687,7 @@ class LigVideo_Integration
         }
 
         // Registra o estilo com versão do plugin
-        $plugin_version = '1.4.8'; // Versão atual do plugin
+        $plugin_version = '1.5.0'; // Versão atual do plugin
         wp_register_style('ligvideo-button-style', false, array(), $plugin_version);
         wp_enqueue_style('ligvideo-button-style');
         wp_add_inline_style('ligvideo-button-style', "
