@@ -240,19 +240,55 @@ class LigVideo_Integration
 
     public function rest_produtos(WP_REST_Request $request)
     {
-        $args = ["limit" => 100, "status" => "publish"];
+        $logger = wc_get_logger();
+        $context = array('source' => 'ligvideo-busca-produtos');
 
-        // Prioriza busca por código de barras (SKU)
-        if ($sku = $request->get_param("codigo_barras")) {
-            $args["sku"] = $sku;
-        } elseif ($id = $request->get_param("id")) {
-            $args["include"] = array_map("intval", explode(",", $id));
-        } elseif ($nome = $request->get_param("nome")) {
-            $args["search"] = $nome;
+        $logger->debug("=== Início da busca de produtos ===", $context);
+        $logger->debug("Parâmetros recebidos: " . json_encode($request->get_params()), $context);
+
+        $args = [
+            "limit" => 100,
+            "status" => "publish",
+            "orderby" => "title",
+            "order" => "ASC"
+        ];
+
+        // Trata paginação se fornecida
+        if ($pagina = $request->get_param("paginaAtual")) {
+            $args["page"] = max(1, intval($pagina));
+        }
+        if ($total = $request->get_param("totalItem")) {
+            $args["limit"] = max(1, intval($total));
         }
 
         $dados = [];
-        foreach (wc_get_products($args) as $p) {
+
+        // Prioriza busca por código de barras (SKU)
+        if ($sku = $request->get_param("codigo_barras")) {
+            $logger->debug("Busca por SKU detectada: " . $sku, $context);
+            $args["sku"] = $sku;
+        } elseif ($id = $request->get_param("id")) {
+            $logger->debug("Busca por ID detectada: " . $id, $context);
+            $args["include"] = array_map("intval", explode(",", $id));
+        } elseif ($nome = $request->get_param("nome")) {
+            $logger->debug("Busca por nome detectada: " . $nome, $context);
+            // Se for números ou números com hífen, busca por SKU
+            if (preg_match('/^[0-9]+(-[0-9]+)?$/', $nome)) {
+                $logger->debug("Nome é numérico, tratando como SKU", $context);
+                $args["sku"] = $nome;
+            } else {
+                $logger->debug("Nome é texto, configurando busca por título", $context);
+                $args["name"] = $nome;
+            }
+        }
+
+        $logger->debug("Argumentos de busca configurados: " . json_encode($args), $context);
+
+        // Busca produtos
+        $produtos = wc_get_products($args);
+        $logger->debug("Produtos encontrados: " . count($produtos), $context);
+
+        foreach ($produtos as $p) {
             $produto_fotos = [wp_get_attachment_url($p->get_image_id())];
             $dados[] = [
                 "produto_id" => $p->get_id(),
@@ -260,11 +296,37 @@ class LigVideo_Integration
                 "produto_preco" => (float) $p->get_price(),
                 "produto_total" => (int) $p->get_stock_quantity(),
                 "produto_fotos" => $produto_fotos,
+                "produto_sku" => $p->get_sku(),
             ];
+            $logger->debug("Produto adicionado: ID=" . $p->get_id() . ", Nome=" . $p->get_name() . ", SKU=" . $p->get_sku(), $context);
+
+            // Se for produto variável, adiciona as variações
+            if ($p->is_type('variable')) {
+                $variations = $p->get_available_variations();
+                foreach ($variations as $variation) {
+                    $variation_obj = wc_get_product($variation['variation_id']);
+                    if ($variation_obj) {
+                        $variation_fotos = [wp_get_attachment_url($variation_obj->get_image_id())];
+                        $dados[] = [
+                            "produto_id" => $variation_obj->get_id(),
+                            "produto_nome" => $variation_obj->get_name(),
+                            "produto_preco" => (float) $variation_obj->get_price(),
+                            "produto_total" => (int) $variation_obj->get_stock_quantity(),
+                            "produto_fotos" => $variation_fotos,
+                            "produto_sku" => $variation_obj->get_sku(),
+                        ];
+                        $logger->debug("Variação adicionada: ID=" . $variation_obj->get_id() . ", Nome=" . $variation_obj->get_name() . ", SKU=" . $variation_obj->get_sku(), $context);
+                    }
+                }
+            }
         }
+
+        $logger->debug("Total de produtos encontrados: " . count($dados), $context);
+        $logger->debug("=== Fim da busca de produtos ===", $context);
 
         $pub_key = get_option(self::PUBLIC_KEY_OPTION);
         if (empty($pub_key)) {
+            $logger->error("Chave pública não configurada", $context);
             return new WP_Error("no_key", "Chave pública não configurada.", [
                 "status" => 500,
             ]);
