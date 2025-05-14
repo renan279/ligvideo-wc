@@ -1,10 +1,12 @@
 <?php
 /**
- * Plugin Name: LigVideo para woocommerce
+ * Plugin Name: LigVideo Integration
  * Description: Integra LigVideo (AlouShop) ao WooCommerce para adicionar produtos ao carrinho via videochamada, suportando simples e variações por ID, e botão flutuante opcional.
  * Version:     1.4.8
  * Author:      Renan Macarroni
- * Text Domain: ligvideo-wc
+ * License:     GPL v2 or later
+ * License URI: https://www.gnu.org/licenses/gpl-2.0.html
+ * Text Domain: ligvideo-integration
  */
 
 if (!defined("ABSPATH")) {
@@ -14,16 +16,17 @@ if (!defined("ABSPATH")) {
 // Só inicializa se o WooCommerce estiver ativo
 add_action("plugins_loaded", function () {
     if (class_exists("WooCommerce")) {
-        new LigVideo_WC_Integration();
+        new LigVideo_Integration();
     }
 });
 
-class LigVideo_WC_Integration
+class LigVideo_Integration
 {
     const PUBLIC_KEY_OPTION = "ligvideo_public_key";
     const PRIVATE_KEY_OPTION = "ligvideo_private_key";
     const STORE_ID_OPTION = "ligvideo_store_id";
     const BUTTON_ENABLED_OPTION = "ligvideo_button_enabled";
+    const BUTTON_IMAGE_ID_OPTION = "ligvideo_button_image_id";
 
     public function __construct()
     {
@@ -42,6 +45,9 @@ class LigVideo_WC_Integration
         // Frontend
         add_action("wp_footer", [$this, "render_floating_button"]);
         add_action("wp_enqueue_scripts", [$this, "enqueue_variation_js"]);
+
+        // Registra a imagem do botão
+        add_action('init', [$this, 'register_button_image']);
     }
 
     public function add_plugin_action_links($links)
@@ -54,8 +60,8 @@ class LigVideo_WC_Integration
     public function add_admin_menu()
     {
         add_options_page(
-            "LigVideo Settings",
-            "LigVideo",
+            "LigVideo Integration Settings",
+            "LigVideo Integration",
             "manage_options",
             "ligvideo-settings",
             [$this, "settings_page"]
@@ -64,10 +70,39 @@ class LigVideo_WC_Integration
 
     public function register_settings()
     {
-        register_setting("ligvideo_settings", self::STORE_ID_OPTION);
-        register_setting("ligvideo_settings", self::PUBLIC_KEY_OPTION);
-        register_setting("ligvideo_settings", self::PRIVATE_KEY_OPTION);
-        register_setting("ligvideo_settings", self::BUTTON_ENABLED_OPTION);
+        register_setting("ligvideo_settings", self::STORE_ID_OPTION, [
+            'sanitize_callback' => 'sanitize_text_field'
+        ]);
+        register_setting("ligvideo_settings", self::PUBLIC_KEY_OPTION, [
+            'sanitize_callback' => [$this, 'sanitize_base64']
+        ]);
+        register_setting("ligvideo_settings", self::PRIVATE_KEY_OPTION, [
+            'sanitize_callback' => [$this, 'sanitize_base64']
+        ]);
+        register_setting("ligvideo_settings", self::BUTTON_ENABLED_OPTION, [
+            'sanitize_callback' => 'rest_sanitize_boolean'
+        ]);
+        register_setting("ligvideo_settings", self::BUTTON_IMAGE_ID_OPTION, [
+            'sanitize_callback' => 'absint'
+        ]);
+    }
+
+    /**
+     * Sanitiza uma string Base64
+     *
+     * @param string $value Valor a ser sanitizado
+     * @return string Valor sanitizado
+     */
+    public function sanitize_base64($value) {
+        // Remove espaços em branco e quebras de linha
+        $value = preg_replace('/\s+/', '', $value);
+
+        // Verifica se é uma string Base64 válida
+        if (base64_decode($value, true) === false) {
+            return '';
+        }
+
+        return $value;
     }
 
     public function settings_page()
@@ -162,7 +197,25 @@ class LigVideo_WC_Integration
                 Acesse <a href="https://ligvideo.com.br/#!/" target="_blank">ligvideo.com.br</a> para mais informações.
             </p>
         </div>
-        <style>.ligvideo-btn img { border-radius: 0 !important; }</style>
+        <style>
+            .ligvideo-btn {
+                position: fixed;
+                bottom: 20px;
+                right: 20px;
+                width: 60px;
+                height: 60px;
+                z-index: 9999;
+                overflow: hidden;
+                box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+                background: transparent;
+            }
+            .ligvideo-btn img {
+                width: 100%;
+                height: 100%;
+                object-fit: cover;
+                object-position: center;
+            }
+        </style>
         <?php
     }
 
@@ -188,10 +241,12 @@ class LigVideo_WC_Integration
     public function rest_produtos(WP_REST_Request $request)
     {
         $args = ["limit" => 100, "status" => "publish"];
-        if ($id = $request->get_param("id")) {
-            $args["include"] = array_map("intval", explode(",", $id));
-        } elseif ($sku = $request->get_param("codigo_barras")) {
+
+        // Prioriza busca por código de barras (SKU)
+        if ($sku = $request->get_param("codigo_barras")) {
             $args["sku"] = $sku;
+        } elseif ($id = $request->get_param("id")) {
+            $args["include"] = array_map("intval", explode(",", $id));
         } elseif ($nome = $request->get_param("nome")) {
             $args["search"] = $nome;
         }
@@ -234,7 +289,7 @@ class LigVideo_WC_Integration
 
         // 1) pega o JSON
         $json = $request->get_param("prod");
-        $logger->debug("JSON recebido: " . var_export($json, true), $context);
+        $logger->debug("JSON recebido: " . $json, $context);
         if (!$json) {
             $logger->error("Nenhum parâmetro prod enviado", $context);
             return new WP_Error("no_products", "Nenhum produto informado.", [
@@ -245,7 +300,7 @@ class LigVideo_WC_Integration
         // 2) decodifica
         $items = json_decode(stripslashes($json), true);
         $logger->debug(
-            "Array decodificado: " . var_export($items, true),
+            "Array decodificado: " . json_encode($items),
             $context
         );
         if (!is_array($items)) {
@@ -298,7 +353,7 @@ class LigVideo_WC_Integration
 
                 $logger->debug(
                     "Variação detectada: var_id={$variation_id}, parent_id={$parent_id}, attrs=" .
-                        var_export($attrs, true),
+                        json_encode($attrs),
                     $context
                 );
 
@@ -359,6 +414,70 @@ class LigVideo_WC_Integration
         exit();
     }
 
+    private function log_debug($message) {
+        // Usa o logger do WooCommerce
+        $logger = wc_get_logger();
+        $context = array('source' => 'ligvideo-integration');
+        $logger->debug($message, $context);
+    }
+
+    public function register_button_image() {
+        $logger = wc_get_logger();
+        $context = array('source' => 'ligvideo-integration');
+
+        $image_path = plugin_dir_path(__FILE__) . 'icon.png';
+        $image_url = plugin_dir_url(__FILE__) . 'icon.png';
+
+        $logger->debug("Iniciando registro da imagem do botão", $context);
+        $logger->debug("Caminho da imagem: " . $image_path, $context);
+
+        // Limpa o anexo antigo se existir
+        $old_attachment_id = get_option(self::BUTTON_IMAGE_ID_OPTION);
+        if ($old_attachment_id) {
+            wp_delete_attachment($old_attachment_id, true);
+            delete_option(self::BUTTON_IMAGE_ID_OPTION);
+            $logger->debug("Anexo antigo removido: " . $old_attachment_id, $context);
+        }
+
+        if (!file_exists($image_path)) {
+            $logger->error("Arquivo de imagem não encontrado em: " . $image_path, $context);
+            return false;
+        }
+
+        // Cria um novo anexo
+        $attachment = array(
+            'guid'           => $image_url,
+            'post_mime_type' => 'image/png',
+            'post_title'     => 'LigVideo Button Icon',
+            'post_content'   => '',
+            'post_status'    => 'inherit'
+        );
+
+        // Primeiro, copia o arquivo para a pasta de uploads
+        $upload_dir = wp_upload_dir();
+        $target_path = $upload_dir['path'] . '/ligvideo-icon.png';
+
+        if (!copy($image_path, $target_path)) {
+            $logger->error("Falha ao copiar arquivo para: " . $target_path, $context);
+            return false;
+        }
+
+        $attachment_id = wp_insert_attachment($attachment, $target_path);
+
+        if (is_wp_error($attachment_id)) {
+            $logger->error("Erro ao inserir anexo: " . $attachment_id->get_error_message(), $context);
+            return false;
+        }
+
+        require_once(ABSPATH . 'wp-admin/includes/image.php');
+        $attachment_data = wp_generate_attachment_metadata($attachment_id, $target_path);
+        wp_update_attachment_metadata($attachment_id, $attachment_data);
+        update_option(self::BUTTON_IMAGE_ID_OPTION, $attachment_id);
+
+        $logger->debug("Imagem registrada com sucesso. ID: " . $attachment_id, $context);
+        return $attachment_id;
+    }
+
     public function render_floating_button()
     {
         if (!get_option(self::BUTTON_ENABLED_OPTION)) {
@@ -404,12 +523,56 @@ class LigVideo_WC_Integration
             $url .= "&var=" . urlencode(wp_json_encode($variacoes));
         }
 
-        echo "<style>.ligvideo-btn{position:fixed;bottom:20px;right:20px;width:60px;height:60px;z-index:9999}.ligvideo-btn img{width:100%;height:100%;}</style>";
-        echo '<a id="ligvideo-btn" href="' . esc_url($url) . '" class="ligvideo-btn" target="_blank">' .
-            '<img src="https://ligvideo.com.br/app/images/favicon.png" alt="Video Call"/>' .
-            "</a>";
-    }
+        // Busca o anexo da imagem do botão
+        $attachment_id = get_option(self::BUTTON_IMAGE_ID_OPTION);
+        $logger = wc_get_logger();
+        $context = array('source' => 'ligvideo-integration');
 
+        if (!$attachment_id) {
+            $logger->debug("Nenhum ID de anexo encontrado, tentando registrar imagem", $context);
+            $attachment_id = $this->register_button_image();
+        }
+
+        if ($attachment_id) {
+            $image = wp_get_attachment_image($attachment_id, 'full', false, array(
+                'class' => 'ligvideo-btn-img',
+                'alt' => 'Video Call',
+                'loading' => 'eager'
+            ));
+
+            if (!$image) {
+                $logger->error("Falha ao gerar imagem para o anexo: " . $attachment_id, $context);
+            }
+        } else {
+            $logger->error("Falha ao obter ID do anexo da imagem", $context);
+        }
+
+        // Registra o estilo com versão do plugin
+        $plugin_version = '1.4.8'; // Versão atual do plugin
+        wp_register_style('ligvideo-button-style', false, array(), $plugin_version);
+        wp_enqueue_style('ligvideo-button-style');
+        wp_add_inline_style('ligvideo-button-style', "
+            .ligvideo-btn {
+                position: fixed;
+                bottom: 20px;
+                right: 20px;
+                width: 60px;
+                height: 60px;
+                z-index: 9999;
+                background: transparent;
+                display: block;
+            }
+            .ligvideo-btn-img {
+                width: 100%;
+                height: 100%;
+                object-fit: contain;
+            }
+        ");
+
+        if (isset($image)) {
+            echo '<a id="ligvideo-btn" href="' . esc_url($url) . '" class="ligvideo-btn" target="_blank">' . wp_kses_post($image) . '</a>';
+        }
+    }
 
     public function enqueue_variation_js()
     {
