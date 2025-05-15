@@ -323,7 +323,7 @@ class LigVideo_Integration
                 }
             }
 
-            // Adiciona variações
+            // Adiciona variações encontradas diretamente
             foreach ($variations as $variation) {
                 $product = wc_get_product($variation->ID);
                 if ($product) {
