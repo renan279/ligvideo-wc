@@ -650,12 +650,32 @@ class LigVideo_Integration
         $logger->debug("Iniciando registro da imagem do botão", $context);
         $logger->debug("Caminho da imagem: " . $image_path, $context);
 
-        // Limpa o anexo antigo se existir
+        // Limpa TODOS os anexos antigos do LigVideo
+        $args = array(
+            'post_type' => 'attachment',
+            'post_status' => 'inherit',
+            'posts_per_page' => -1,
+            'meta_query' => array(
+                array(
+                    'key' => '_wp_attached_file',
+                    'value' => 'ligvideo-icon',
+                    'compare' => 'LIKE'
+                )
+            )
+        );
+
+        $old_attachments = get_posts($args);
+        foreach ($old_attachments as $old_attachment) {
+            wp_delete_attachment($old_attachment->ID, true);
+            $logger->debug("Anexo antigo removido: " . $old_attachment->ID, $context);
+        }
+
+        // Limpa o anexo atual se existir
         $old_attachment_id = get_option(self::BUTTON_IMAGE_ID_OPTION);
         if ($old_attachment_id) {
             wp_delete_attachment($old_attachment_id, true);
             delete_option(self::BUTTON_IMAGE_ID_OPTION);
-            $logger->debug("Anexo antigo removido: " . $old_attachment_id, $context);
+            $logger->debug("Anexo atual removido: " . $old_attachment_id, $context);
         }
 
         if (!file_exists($image_path)) {
@@ -663,18 +683,19 @@ class LigVideo_Integration
             return false;
         }
 
-        // Cria um novo anexo
+        // Cria um novo anexo com nome único baseado no timestamp
+        $timestamp = time();
         $attachment = array(
             'guid'           => $image_url,
             'post_mime_type' => 'image/png',
-            'post_title'     => 'LigVideo Button Icon',
+            'post_title'     => 'LigVideo Button Icon ' . $timestamp,
             'post_content'   => '',
             'post_status'    => 'inherit'
         );
 
-        // Primeiro, copia o arquivo para a pasta de uploads
+        // Primeiro, copia o arquivo para a pasta de uploads com nome único
         $upload_dir = wp_upload_dir();
-        $target_path = $upload_dir['path'] . '/ligvideo-icon.png';
+        $target_path = $upload_dir['path'] . '/ligvideo-icon-' . $timestamp . '.png';
 
         if (!copy($image_path, $target_path)) {
             $logger->error("Falha ao copiar arquivo para: " . $target_path, $context);
@@ -752,20 +773,6 @@ class LigVideo_Integration
             $attachment_id = $this->register_button_image();
         }
 
-        if ($attachment_id) {
-            $image = wp_get_attachment_image($attachment_id, 'full', false, array(
-                'class' => 'ligvideo-btn-img',
-                'alt' => 'Video Call',
-                'loading' => 'eager'
-            ));
-
-            if (!$image) {
-                $logger->error("Falha ao gerar imagem para o anexo: " . $attachment_id, $context);
-            }
-        } else {
-            $logger->error("Falha ao obter ID do anexo da imagem", $context);
-        }
-
         // Registra o estilo com versão do plugin
         $plugin_version = '1.5.0'; // Versão atual do plugin
         wp_register_style('ligvideo-button-style', false, array(), $plugin_version);
@@ -788,9 +795,34 @@ class LigVideo_Integration
             }
         ");
 
-        if (isset($image)) {
-            echo '<a id="ligvideo-btn" href="' . esc_url($url) . '" class="ligvideo-btn" target="_blank">' . wp_kses_post($image) . '</a>';
+        // Adiciona o botão com fallback para imagem
+        echo '<a id="ligvideo-btn" href="' . esc_url($url) . '" class="ligvideo-btn" target="_blank">';
+
+        if ($attachment_id) {
+            $image = wp_get_attachment_image($attachment_id, 'full', false, array(
+                'class' => 'ligvideo-btn-img',
+                'alt' => 'Video Call',
+                'loading' => 'eager'
+            ));
+
+            if ($image) {
+                echo wp_kses_post($image);
+            } else {
+                // Fallback para imagem direta se o anexo falhar
+                $image_url = wp_get_attachment_url($attachment_id);
+                if ($image_url) {
+                    echo '<img src="' . esc_url($image_url) . '" class="ligvideo-btn-img" alt="Video Call" loading="eager">';
+                } else {
+                    // Fallback final para imagem do plugin
+                    echo '<img src="' . esc_url(plugin_dir_url(__FILE__) . 'icon.png') . '" class="ligvideo-btn-img" alt="Video Call" loading="eager">';
+                }
+            }
+        } else {
+            // Fallback para imagem do plugin se não houver anexo
+            echo '<img src="' . esc_url(plugin_dir_url(__FILE__) . 'icon.png') . '" class="ligvideo-btn-img" alt="Video Call" loading="eager">';
         }
+
+        echo '</a>';
     }
 
     public function enqueue_variation_js()
